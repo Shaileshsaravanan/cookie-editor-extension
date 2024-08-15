@@ -1,16 +1,19 @@
 /* globals cookies, table, editor, Resizable */
 'use strict';
 
-var args = new URLSearchParams(location.search);
-var search = args.get('search') || null;
-var tabId = args.get('tabId') || null;
+const args = new URLSearchParams(location.search);
+const hash = new URLSearchParams(location.hash.substr(1));
+
+const search = args.get('search') || null;
+let tabId = args.get('tabId') || null;
 if (tabId) {
   tabId = Number(tabId);
 }
 document.body.dataset.popup = !tabId && !search;
 
 const init = a => {
-  const hostnames = a.map(o => o.origin).filter((h, i, l) => l.indexOf(h) === i);
+  const hostnames = a.filter(o => o && o.host).map(o => o.origin).filter((h, i, l) => l.indexOf(h) === i);
+
   const top = a.filter(o => o.top).shift();
   hostnames.forEach(h => {
     const tbody = table.section(h, h === top.origin);
@@ -28,7 +31,7 @@ const init = a => {
     });
   });
   // resizing for expanded mode
-  if (document.body.dataset.popup === 'false') {
+  if (false && document.body.dataset.popup === 'false') {
     const resizable = new Resizable(document.getElementById('header'), {
       offset: -3,
       width: 5,
@@ -44,28 +47,67 @@ const init = a => {
   document.getElementById('loading').remove();
 };
 
-document.addEventListener('DOMContentLoaded', () => {
-  if (search) {
-    if (search.indexOf('://') === -1) {
-      search = 'http://' + search;
+window.addEventListener('load', async () => {
+  if (search === 'true') {
+    let s = prompt('Please enter the domain (e.g.: www.example.com)', hash.get('s') || 'www.example.com') ||
+      'wwww.example.com';
+    location.hash = 's=' + encodeURIComponent(s);
+    if (s.indexOf('://') === -1) {
+      s = 'https://' + s;
     }
-    init([Object.assign(new URL(search), {
-      top: true
-    })]);
+    try {
+      init([Object.assign(new URL(s), {
+        top: true
+      })]);
+    }
+    catch (e) {
+      document.getElementById('loading').remove();
+      document.getElementById('msg').textContent = e.message + '\n\nLocation: ' + s;
+    }
   }
   else {
-    chrome.tabs.executeScript(tabId, {
-      allFrames: true,
-      code: 'Object.assign({top: window.top === window}, document.location);',
-      runAt: 'document_start'
-    }, a => {
-      if (chrome.runtime.lastError) {
-        document.getElementById('loading').remove();
-        document.getElementById('msg').textContent = chrome.runtime.lastError.message;
+    const [tab] = await chrome.tabs.query({
+      currentWindow: true,
+      active: true
+    });
+    if (!tabId) {
+      tabId = tab.id;
+    }
+    Promise.race([
+      chrome.scripting.executeScript({
+        target: {
+          tabId,
+          allFrames: true
+        },
+        func: () => Object.assign({
+          top: window.top === window
+        }, document.location),
+        injectImmediately: true
+      }),
+      new Promise((resolve, reject) => setTimeout(() => {
+        try {
+          resolve([{
+            result: Object.assign(new URL(tab.url), {
+              top: true
+            })
+          }]);
+        }
+        catch (e) {
+          reject(e);
+        }
+      }, 5000))
+    ]).then(a => {
+      const results = a.map(r => r.result).filter(o => o);
+      if (results.length) {
+        init(results);
+        return;
       }
-      else {
-        init(a);
-      }
+      throw Error('This page has no document');
+    }).catch(e => {
+      console.log(e);
+      document.getElementById('loading').remove();
+      console.log(tab);
+      document.getElementById('msg').textContent = 'Cannot find cookies for this page: ' + e.message;
     });
   }
 });
